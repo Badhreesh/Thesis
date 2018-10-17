@@ -100,9 +100,10 @@ class CnnPolicy(object):
         
         X = tf.placeholder(tf.uint8, ob_shape) #obs
         A = tf.placeholder(tf.int32, nbatch) # 16*1 for step_model, 16*20 for train_model
+        one_hot_A = tf.one_hot(A, 6)
         with tf.variable_scope("model", reuse=reuse):
             h = nature_cnn(X, **conv_kwargs)
-            Qf = fc(h, 'Qf', ac_space.n) # (nbatch,nactions)
+            Qf = fc(h, 'Qf', ac_space.n) # (nbatch,nactions) --> (16,6)
 
         with tf.variable_scope("target_model", reuse=reuse):
             h = nature_cnn(X, **conv_kwargs)
@@ -110,19 +111,13 @@ class CnnPolicy(object):
             
 
         '''
-        For step_model:
-        	nenvs=16 and nsteps=1, shape is (16*1,6)
-        For train_model:
-        	nenvs=16 and nsteps=20, shape is (16*20,6)
+        step() called by self.model.step(self.obs) in run(). step_model is used to compute actions for each env, using self.obs (16, 84, 84, 1)
         '''
-        a0 = tf.argmax(Qf,axis=1) #  axis = 1, meaning argmax taken along rows ( in our case, nbatch) Size (16*20,)
-        #step_model: a0 is (16,)
-        #train_model: a0 is (320,)
+        a0 = tf.argmax(Qf,axis=1) #  axis = 1, meaning argmax taken along rows. step_model: a0 is (16,)
 
         Q0 = tf.reduce_max(Qf_target,axis=1)
-
+        
         def step(ob, *_args, **_kwargs):
-            #a, Q = sess.run([a0, Qf], {X:ob}) #a is the arg of chosen action(scalar), Q has the Q values for all actions
             a = sess.run(a0, {X:ob})
             return a 
 	
@@ -140,19 +135,32 @@ class CnnPolicy(object):
             scope_v: source scope
             """
             assign_ops = []
+            # Get parameters of prediction network
             vars_c = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope=scope_c)
+            # Get parameters of target network
             vars_v = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope=scope_v)
+            '''
             for i in range(len(vars_v)):
                 assign_ops.append(tf.assign(vars_v[i], vars_c[i])) # Update vars_v[i] by assigning vars_c[i] to it
             assign_all = tf.group(*assign_ops)
-            return assign_all
+            '''
+            #print("%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%")
+            for var_c,var_v in zip(vars_c, vars_v):
+                assign_ops.append(var_v.assign(var_c))
+                #print(var_c, var_v)
+            #print("%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%")
+            return assign_ops
 
         self.X = X
         self.A = A
-        self.Qf = tf.gather(Qf,A,axis=1) #(nbatch, actions) but it has to look (nbatch,1)
+ 
+        self.Qf = tf.reduce_sum(tf.multiply(Qf, one_hot_A), 1)
+        print('$$$$$$$$$$$')
+        print(self.Qf.get_shape())
+        print('$$$$$$$$$$$')
         #self.Qf = Qf
         self.step = step
-        self.value = value # instance "Target_network" can access value() bcus of this line
+        self.value = value # Use this to compute bootstrapped value for ur Q Target
         self.get_copy_weights_operator = get_copy_weights_operator
 
 class MlpPolicy(object):
