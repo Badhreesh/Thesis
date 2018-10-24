@@ -7,7 +7,7 @@ def nature_cnn(unscaled_images, **conv_kwargs):
     """
     CNN from Nature paper.
     """
-    scaled_images = tf.cast(unscaled_images, tf.float32) # / 255. # Rmoving normalisation here bcus its already done in the doom envs in doom_env.pu
+    scaled_images = tf.cast(unscaled_images, tf.float32) / 255. 
     activ = tf.nn.relu
     h = activ(conv(scaled_images, 'c1', nf=32, rf=8, stride=4, init_scale=np.sqrt(2),
                    **conv_kwargs))
