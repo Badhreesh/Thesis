@@ -60,7 +60,7 @@ class Model(object):
                 [loss, _train],
                 td_map
             )
-            return action_value_loss
+            return action_value_loss, cur_lr
 
         def save(save_path):
             ps = sess.run(params)
@@ -198,7 +198,7 @@ Learn a "policy" for the "env" for "total_timesteps with "lrschedule"
 '''
 def learn(policy, env, seed,  total_timesteps=int(80e6),lrschedule='linear',nsteps=20,
  max_grad_norm=None, lr=7e-4,  epsilon=0.1, alpha=0.99, gamma=0.99, log_interval=1000, #alpha and epsilon for RMSprop used in Model()
- exploration_fraction=0.8, exploration_final_eps=0.01, target_network_update_freq=10000): # Additional arguments for epsilon greedy
+ exploration_fraction=0.8, exploration_final_eps=0.001, target_network_update_freq=10000): # Additional arguments for epsilon greedy
 
     tf.reset_default_graph()
     set_global_seeds(seed)
@@ -220,7 +220,7 @@ def learn(policy, env, seed,  total_timesteps=int(80e6),lrschedule='linear',nste
     for update in range(1, total_timesteps//nbatch+1): # For 100k steps, loop is from 1 to 313 -> runs 312 updates     
         update_eps = exploration.value(update*nbatch) 
         obs, rewards, actions = runner.run(update_eps) # Performs 1 update step. For 16 envs nd nstep = 20, shapes r: (16*20,84,84,1), (320,), (320,) resp
-        action_value_loss = model.train(obs, rewards, actions) # Computes TD Error
+        action_value_loss, cur_lr = model.train(obs, rewards, actions) # Computes TD Error
         nseconds = time.time()-tstart
 
         fps = int((update*nbatch)/nseconds)
@@ -229,7 +229,7 @@ def learn(policy, env, seed,  total_timesteps=int(80e6),lrschedule='linear',nste
             #print('Target Network Updated')
             model.update_target()
         if update % log_interval == 0 or update == 1:
-
+            logger.record_tabular("learning rate", cur_lr)
             logger.record_tabular("epsilon", update_eps)
             logger.record_tabular("nupdates", update)
             logger.record_tabular("total_timesteps", update*nbatch)
