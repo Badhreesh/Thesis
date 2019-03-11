@@ -9,28 +9,28 @@ from baselines.ppo2.policies import CnnPolicy
 '''
 create 16 envs to train a particular doom level for set no of time steps with specified model(cnn) and learning rate schedule(linear)
 '''
-def train(doom_lvl, num_timesteps, seed, policy, lrschedule, num_env):
+def train(doom_lvl, num_timesteps, seed, policy, lrschedule, num_env, training):
     print('train() called')
     if policy == 'cnn':
         policy_fn = CnnPolicy
 
     env = make_doom_env(doom_lvl, num_env, seed) # Make "num_env" environments 
 
-    learn(policy_fn, env, seed, total_timesteps=int(num_timesteps * 1.1), lrschedule=lrschedule)  # Learn 
+    learn(policy_fn, env, seed, training, total_timesteps=int(num_timesteps * 1.1), lrschedule=lrschedule)  
     env.close()
 
 def main():
     parser = doom_arg_parser() # Create an argparse.ArgumentParser for doom_atari.py.(contains env_id, seed, num_timesteps args for
                                 # train() )
     parser.add_argument('--policy', help='Policy architecture', default='cnn')
-    parser.add_argument('--lrschedule', help='Learning rate schedule', choices=['constant', 'linear'], default='constant')
+    parser.add_argument('--lrschedule', help='Learning rate schedule', choices=['constant', 'linear'], default='linear')
     
     args = parser.parse_args()
-    logger.configure('/misc/student/raob/Tests/DummyTests/Exp_1')
-    # Train "num_env" envs, each running "env_id" for "num_timesteps" timesteps with a policy architecture "policy"
+    logger.configure('/misc/student/raob/Tests/60e6_Steps/Exp_hg_normal_many_textures')
+    # Train "num_env" envs, each running "doom_lvl" for "num_timesteps" timesteps with a policy architecture "policy"
     # with a Learning rate schedule "lrschedule"
     train(doom_lvl=args.doom_lvl, num_timesteps=args.num_timesteps, seed=args.seed,
-        policy=args.policy, lrschedule=args.lrschedule, num_env=16) # 1) Train 16 envs 
+        policy=args.policy, lrschedule=args.lrschedule, num_env=1, training=False) # 1) Train 16 envs 
 
 if __name__ == '__main__':
     main()
