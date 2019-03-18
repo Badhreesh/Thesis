@@ -40,7 +40,7 @@ class Model(object):
         print('R:', R.get_shape())
         
         loss = tf.reduce_sum(huber_loss(train_model.Qf - R)) # This is your TD Error (Prediction - TD Target)
-        
+        # Add both mapping and adversarial losses here. They will be the same
         params = find_trainable_variables("model") # Returns a list of variable objects
         print('$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$')
         print(params)
@@ -64,6 +64,7 @@ class Model(object):
                 [loss, _train],
                 td_map
             )
+            # run DA losses in a session here. Start with running them after every update step. Later, condsider running after every 10 steps
             return action_value_loss, cur_lr
 
         def save(save_path):
@@ -79,7 +80,8 @@ class Model(object):
             sess.run(restores)
         
         saver = tf.train.Saver()
-        part_vars_names = ('model/c1/b','model/c1/w','model/c2/b','model/c2/w','model/c3/b','model/c3/w','model/fc1/b','model/fc1/w')
+        #part_vars_names = ('model/c1/b','model/c1/w','model/c2/b','model/c2/w','model/c3/b','model/c3/w','model/fc1/b','model/fc1/w')
+        part_vars_names = ('model/c1/b','model/c1/w','model/c2/b','model/c2/w','model/c3/b','model/c3/w')
         part_vars = [var for var in params if var.name[:-2] in part_vars_names]
         print(part_vars)
         saver_adda = tf.train.Saver(part_vars)
@@ -98,7 +100,8 @@ class Model(object):
             	#variables_can_be_restored = list(set(tf.get_collection_ref(tf.GraphKeys.GLOBAL_VARIABLES)).intersection(tf.train.list_variables('./adda_doom_DA/adda_doom_DA-10')))
             	#print(variables_can_be_restored)
             	
-            	saver_adda.restore(sess, './adda_doom_DA/hg_normal_snapshots/Seed {}/adda_doom_DA-{}'.format(seed, snapshot))
+            	saver_adda.restore(sess, './adda_doom_DA/hg_normal no fc snapshots/Seed {}/adda_doom_DA-{}'.format(seed, snapshot))
+            	#saver_adda.restore(sess, './adda_doom_DA/hg_normal_snapshots for different batch sizes/{}/adda_doom_DA-{}'.format(bsize, snapshot))
             #saver.restore(sess, './hg_normal_many_textures/hg_normal_many_textures_model')
             #print(sess.run('model/c1/b:0'))
 
@@ -230,9 +233,9 @@ class Runner(AbstractEnvRunner):
         for i in range(num_episodes):
             episode_rwd = []
             #total_health = []
-            initial_done = False
+            done = False
            
-            while not initial_done:
+            while not done:
                 
                 action = self.model.step(self.obs) # (1,)
                 
@@ -349,10 +352,11 @@ def learn(policy, env, seed,training,  total_timesteps=int(80e6),lrschedule='lin
                 logger.dump_tabular()
     else:
 
-        snapshots = 1
-        #runs = 1
-        seeds = 1
+        snapshots = 2
+        seeds = 3
+        snapshot_rewards = np.zeros(shape=(seeds, snapshots+1))
         seed_list = ['Seed 0', 'Seed 1', 'Seed 2']
+
         for seed in range(seeds):
             snapshot_reward = []
             #snapshot_health = []
@@ -362,12 +366,13 @@ def learn(policy, env, seed,training,  total_timesteps=int(80e6),lrschedule='lin
                 model.load_model(snapshot, seed, adda_mode=True)
                 #print('##################################################')
                 print('Evaluating snapshot {}!!!'.format(snapshot))
-                #reward = runner.runner_eval_parallel(num_episodes=1000, num_envs=nenvs)
-                reward = runner.runner_eval(num_episodes=1000)
+                reward = runner.runner_eval_parallel(num_episodes=1000, num_envs=nenvs)
+                #reward = runner.runner_eval(num_episodes=1000)
                 snapshot_reward.append(reward)
                 #snapshot_health.append(health)
                 
             print('Mean Reward of every snapshot: ', snapshot_reward)
+            snapshot_rewards[seed] = snapshot_reward
             #print('Mean Health of every snapshot: ', snapshot_health)
             print('##################################################')
             nseconds = time.time() - tstart
@@ -379,17 +384,26 @@ def learn(policy, env, seed,training,  total_timesteps=int(80e6),lrschedule='lin
             plt.plot(epochs, np.array(snapshot_reward), '-o', label = seed_list[seed])
             plt.legend(loc = 'lower right')
             plt.xlabel('Epochs')
-            plt.ylabel('Mean Reward after 10 episodes')
-            plt.savefig('Mean_Reward.png')
-            '''
-            plt.figure()
-            plt.plot(epochs, np.array(snapshot_health), '-o')
-            plt.xlabel('Epochs')
-            plt.ylabel('Mean Health after 1000 episodes')
-            plt.savefig('Mean_Health.png')
-            '''
-            #fig1.savefig('Mean_Reward.png')
-            #fig2.savefig('Mean_Health.png')
-
+            plt.ylabel('Mean Reward after 1000 episodes')
+            plt.savefig('Mean Reward.png')
+        
+        # Create plot of mean reward of all seed values with std devns
+        mean = []
+        std = []
+        for x, y, z in zip(snapshot_rewards[0],snapshot_rewards[1],snapshot_rewards[2]):
+            mean_val = np.mean([x,y,z])
+            std_val = np.std([x,y,z])
+            mean.append(mean_val)
+            std.append(std_val) 
+        epochs = np.arange(0, snapshots+1)
+        lower = np.array(mean)-np.array(std)
+        upper = np.array(mean)+np.array(std)
+        plt.figure()
+        plt.plot(epochs, np.array(mean), 'k-')
+        plt.fill_between(epochs, lower, upper, alpha = 0.75)
+        #plt.title('Mean Reward of 3 seed values')
+        plt.xlabel('Epochs')
+        plt.ylabel('Mean Reward after 1000 episodes')
+        plt.savefig('Mean Reward of 3 seeds with std.png')
 
 
