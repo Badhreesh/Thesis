@@ -20,7 +20,7 @@ class Model(object):
     '''
     Used to initialize the step_model(sampling) and train_model(training)
     '''
-    def __init__(self, policy, ob_space, ac_space, nenvs, nsteps,max_grad_norm=0.5,
+    def __init__(self, policy, ob_space, ac_space, nenvs, nsteps, use_adda, adda_lr, adda_batch, max_grad_norm=0.5,
      lr=7e-4,alpha=0.99, epsilon=1e-5, total_timesteps=int(80e6), lrschedule='linear'): # The epsilion and alpha mentioned here is for RMSProp
     											
 
@@ -32,39 +32,94 @@ class Model(object):
 
         R = tf.placeholder(tf.float32, [nbatch]) # This is your TD Target
         LR = tf.placeholder(tf.float32, [])
-
-
-        step_model = policy(sess, ob_space, ac_space, nbatch=nenvs*1, nsteps=1, reuse=False) # nbatch = nenvs*nsteps, model for generating data, Take 1 step for each env
-        train_model = policy(sess, ob_space, ac_space, nbatch=nenvs*nsteps, nsteps=nsteps, reuse=True) # model for training using collected data
+        
+        source_array = np.load('/misc/lmbraid18/raob/source_dataset.npy') # (100000, 84, 84, 1)
+        target_array = np.load('/misc/lmbraid18/raob/target_dataset.npy') # (100000, 84, 84, 1)
+            
+        print('adda_batch:', adda_batch)
+        step_model = policy(sess, ob_space, ac_space, adda_batch, nbatch=nenvs*1, nsteps=1, reuse=False, use_adda=use_adda) # nbatch = nenvs*nsteps, model for generating data, Take 1 step for each env
+        train_model = policy(sess, ob_space, ac_space, adda_batch, nbatch=nenvs*nsteps, nsteps=nsteps, reuse=True, use_adda=use_adda) # model for training using collected data
+        
         print('Qf:', train_model.Qf.get_shape())
         print('R:', R.get_shape())
         
-        loss = tf.reduce_sum(huber_loss(train_model.Qf - R)) # This is your TD Error (Prediction - TD Target)
-        # Add both mapping and adversarial losses here. They will be the same
-        params = find_trainable_variables("model") # Returns a list of variable objects
-        print('$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$')
-        print(params)
-        print('$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$')
+        ##########################################################    RL    ###############################################################
+        ########### Loss for RL Part ###########
+        loss = tf.reduce_sum(huber_loss(train_model.Qf - R)) # This is your TD Error (Prediction (320,) - TD Target (320,)) 
+        #############################################
+
+        params = find_trainable_variables("model") # Returns a list of variable objects for RL Model
+        
+        ########### Optimizer for RL Part ###########
         grads = tf.gradients(loss, params) #Calculate gradients of loss wrt params.Returns a list of sum(d_loss/d_param) for each param in params
         if max_grad_norm is not None:
             grads, grad_norm = tf.clip_by_global_norm(grads, max_grad_norm)
         grads_and_vars = list(zip(grads, params)) # grads_and_vars is a list of (gradient, variable) pairs 
         trainer = tf.train.RMSPropOptimizer(learning_rate=LR, decay=alpha, epsilon=epsilon)
         _train = trainer.apply_gradients(grads_and_vars) # Returns an operation that applies the specified gradients.  
+        #############################################        
+        #####################################################################################################################################
         
+        ############################################################   ADDA   ##############################################################
+        if use_adda:
+
+            source_array = np.load('/misc/lmbraid18/raob/source_dataset.npy') # (100000, 84, 84, 1)
+            target_array = np.load('/misc/lmbraid18/raob/target_dataset.npy') # (100000, 84, 84, 1)
+        
+            sess.run(train_model.source_iter_op, feed_dict={train_model.dataset_imgs:source_array})
+            sess.run(train_model.target_iter_op, feed_dict={train_model.dataset_imgs:target_array})
+            ########### Loss for DA Part ###########
+            mapping_loss = tf.losses.sparse_softmax_cross_entropy( 
+                1 - train_model.adversary_labels, train_model.adversary_logits)
+            adversary_loss = tf.losses.sparse_softmax_cross_entropy(
+                train_model.adversary_labels, train_model.adversary_logits)
+            #############################################
+
+            adversary_vars = find_trainable_variables("adversary") # Returns a list of variable objects for Discriminator
+            # extract vars used in target encoder for optimizing in DA part
+            part_vars_names = ('model/c1/b','model/c1/w','model/c2/b','model/c2/w','model/c3/b','model/c3/w','model/fc1/b','model/fc1/w')
+            target_vars = [var for var in params if var.name[:-2] in part_vars_names]
+
+            ########### Optimizer for DA Part ###########
+            lr_var = tf.Variable(adda_lr, name='learning_rate', trainable=False)
+            optimizer = tf.train.RMSPropOptimizer(lr_var)
+            mapping_step = optimizer.minimize(
+                mapping_loss, var_list=list(target_vars))
+            adversary_step = optimizer.minimize(
+                adversary_loss, var_list=list(adversary_vars))
+            #############################################   
+            print('########################')
+            print(target_vars)
+            print('########################')
+            print('\n')
+            print('########################')
+            print(adversary_vars)
+            print('########################')
+        #####################################################################################################################################
+     
         lr = Scheduler(v=lr, nvalues=total_timesteps, schedule=lrschedule) # Learning Rate Scheduling
 
-        def train(obs, rewards, actions):
+        def train(obs, rewards, actions, update):
             for step in range(len(obs)): # len(obs) = 320
                 cur_lr = lr.value()
-
+            
+            ########### Run Session for RL Part ###########
             td_map = {train_model.X:obs,R:rewards, LR:cur_lr, train_model.A:actions}
 
             action_value_loss, _ = sess.run(
                 [loss, _train],
                 td_map
             )
+            #############################################
+
+            ########### Run Session for DA Part ###########
             # run DA losses in a session here. Start with running them after every update step. Later, condsider running after every 10 steps
+            if update % 10 == 0 or update == 1:
+                mapping_loss_val, adversary_loss_val, _, _ = sess.run([mapping_loss, adversary_loss, mapping_step, adversary_step])
+                
+            
+            #############################################
+
             return action_value_loss, cur_lr
 
         def save(save_path):
@@ -79,15 +134,15 @@ class Model(object):
                 restores.append(p.assign(loaded_p))
             sess.run(restores)
         
-        saver = tf.train.Saver()
-        #part_vars_names = ('model/c1/b','model/c1/w','model/c2/b','model/c2/w','model/c3/b','model/c3/w','model/fc1/b','model/fc1/w')
-        part_vars_names = ('model/c1/b','model/c1/w','model/c2/b','model/c2/w','model/c3/b','model/c3/w')
+        saver = tf.train.Saver(max_to_keep=100)
+        part_vars_names = ('model/c1/b','model/c1/w','model/c2/b','model/c2/w','model/c3/b','model/c3/w','model/fc1/b','model/fc1/w')
+        #part_vars_names = ('model/c1/b','model/c1/w','model/c2/b','model/c2/w','model/c3/b','model/c3/w')
         part_vars = [var for var in params if var.name[:-2] in part_vars_names]
-        print(part_vars)
+        #print(part_vars)
         saver_adda = tf.train.Saver(part_vars)
         
-        def save_model():
-            saver.save(sess, './hg_normal_many_textures/hg_normal_many_textures_model')   
+        def save_model(save_step):
+            saver.save(sess, './hg_normal_with_da/hg_normal_with_da_model',global_step = save_step, write_meta_graph=False)   
         
         def load_model(snapshot, seed, adda_mode=False):
 
@@ -95,16 +150,15 @@ class Model(object):
             if snapshot == 0:
                 saver.restore(sess, './hg_normal/hg_normal_model')
                 #saver.restore(sess, './hg_normal_many_textures/hg_normal_many_textures_model')
-
+            #saver.restore(sess, './hg_normal_with_da/hg_normal_with_da_model-{}'.format(snapshot))
+            '''
             if snapshot > 0 and adda_mode:
-            	#variables_can_be_restored = list(set(tf.get_collection_ref(tf.GraphKeys.GLOBAL_VARIABLES)).intersection(tf.train.list_variables('./adda_doom_DA/adda_doom_DA-10')))
-            	#print(variables_can_be_restored)
             	
-            	saver_adda.restore(sess, './adda_doom_DA/hg_normal no fc snapshots/Seed {}/adda_doom_DA-{}'.format(seed, snapshot))
-            	#saver_adda.restore(sess, './adda_doom_DA/hg_normal_snapshots for different batch sizes/{}/adda_doom_DA-{}'.format(bsize, snapshot))
-            #saver.restore(sess, './hg_normal_many_textures/hg_normal_many_textures_model')
+            	#saver_adda.restore(sess, './adda_doom_DA/hg_normal no fc snapshots/Seed {}/adda_doom_DA-{}'.format(seed, snapshot))
+            	saver_adda.restore(sess, './adda_doom_DA/hg_normal_many_textures_snapshots/Seed {}/adda_doom_DA-{}'.format(seed, snapshot))
+                #saver.restore(sess, './hg_normal_many_textures/hg_normal_many_textures_model')
             #print(sess.run('model/c1/b:0'))
-
+            '''
         copy_op = step_model.get_copy_weights_operator()
         
         def update_target():
@@ -209,7 +263,7 @@ class Runner(AbstractEnvRunner):
         mb_actions = np.asarray(mb_actions, dtype=np.int32).swapaxes(1, 0) # shape (16, 20)
         mb_dones = np.asarray(mb_dones, dtype=np.bool).swapaxes(1, 0) # shape (16, 21)
         mb_dones = mb_dones[:, 1:] # shape (16, 20) to remove the initial value of self.dones ( The tensor containing all False, defined in runners.py)
-        last_values = self.model.value(self.obs).tolist() # last Q value w/0 gamma, for every env, from your target network with shape (16,)
+        last_values = self.model.value(self.obs).tolist() # last Q value of Q_Target, for every env, from your target network with shape (16,)
         
         #discount/bootstrap off value fn
         for n, (rewards, dones, value) in enumerate(zip(mb_rewards, mb_dones, last_values)):
@@ -224,7 +278,7 @@ class Runner(AbstractEnvRunner):
         mb_rewards = mb_rewards.flatten() # Before: (16,20) After: (320,)
         mb_actions = mb_actions.flatten() # Before: (16,20) After: (320,)
         
-        return mb_obs, mb_rewards, mb_actions
+        return mb_obs, mb_rewards, mb_actions # shapes (320, 84, 84, 1), (320,), (320,) 
     
     # Funcn to return optimal actions from trained model
     def runner_eval(self, num_episodes):
@@ -302,7 +356,7 @@ class Runner(AbstractEnvRunner):
 Learn a "policy" for the "env" for "total_timesteps with "lrschedule"
 Update on 20/2/19; Added training boolean to switch between training and evaluation. Set to False in run_doom.py to perform evaluation
 '''
-def learn(policy, env, seed,training,  total_timesteps=int(80e6),lrschedule='linear',nsteps=20,
+def learn(policy, env, seed, training, use_adda, adda_lr, adda_batch, total_timesteps=int(80e6),lrschedule='linear',nsteps=20,
  max_grad_norm=None, lr=7e-4,  epsilon=0.1, alpha=0.99, gamma=0.99, log_interval=1000, #alpha and epsilon for RMSprop used in Model()
  exploration_fraction=0.8, exploration_final_eps=0.001, target_network_update_freq=10000): # Additional arguments for epsilon greedy
 
@@ -314,8 +368,10 @@ def learn(policy, env, seed,training,  total_timesteps=int(80e6),lrschedule='lin
     ob_space = env.observation_space # (84,84,1)
     ac_space = env.action_space # Discrete(6)
 
-    model = Model(policy=policy, ob_space=ob_space, ac_space=ac_space, nenvs=nenvs, nsteps=nsteps,
+    model = Model(policy=policy, ob_space=ob_space, ac_space=ac_space, nenvs=nenvs, nsteps=nsteps, use_adda=use_adda, adda_lr=adda_lr, adda_batch=adda_batch,
         max_grad_norm=max_grad_norm, lr=lr, alpha=alpha, epsilon=epsilon, total_timesteps=total_timesteps, lrschedule=lrschedule)
+    print('Model Obj created')
+    #import sys; sys.exit()
     runner = Runner(env, model, nsteps=nsteps, gamma=gamma)
     
     if training:
@@ -324,18 +380,20 @@ def learn(policy, env, seed,training,  total_timesteps=int(80e6),lrschedule='lin
         exploration = LinearSchedule(schedule_timesteps=50000000 , initial_p=1.0, final_p=exploration_final_eps) # U want to hit lowest epsilon value in 50e6 steps
         model.update_target()
         tstart = time.time()
+        save_step = 0
         for update in range(1, total_timesteps//nbatch+1): # For 100k steps, loop is from 1 to 313 -> runs 312 updates     
             update_eps = exploration.value(update*nbatch) 
             # Performs 1 update step (320 total_timesteps). For 16 envs nd nstep = 20, shapes r: (16*20,84,84,1), (320,), (320,) resp
             obs, rewards, actions = runner.run(update_eps) 
-            action_value_loss, cur_lr = model.train(obs, rewards, actions) # Computes TD Error
+            action_value_loss, cur_lr = model.train(obs, rewards, actions, update) # Computes TD Error
             nseconds = time.time()-tstart
 
             fps = int((update*nbatch)/nseconds)
-        
-            # Save model every 2e6 steps (each iteration of loop makes 320 steps. To make target network update ard 10k steps, 320*6250 = 2e6 steps. So update % 6250)
-            if update % 6250 == 0:
-                model.save_model()
+            
+            # Save model every 1e6 steps (each iteration of loop makes 320 steps. 320*3125 = 1e6 steps. So update % 3125)
+            if update % 3125 == 0 or update == 1:
+                model.save_model(save_step)
+                save_step += 1
                 #print('Model Saved')
             # Update target network every 10k steps 
             if update % 31 == 0:
@@ -348,12 +406,14 @@ def learn(policy, env, seed,training,  total_timesteps=int(80e6),lrschedule='lin
                 logger.record_tabular("total_timesteps", update*nbatch)
                 logger.record_tabular("fps", fps)
                 logger.record_tabular("action_value_loss", float(action_value_loss))
+                #logger.record_tabular("mapping_loss", float(mapping_loss_val))
+                #logger.record_tabular("adversary_loss", float(adversary_loss_val))
                 logger.record_tabular("time_elapsed", nseconds)
                 logger.dump_tabular()
     else:
 
-        snapshots = 2
-        seeds = 3
+        snapshots = 0
+        seeds = 1
         snapshot_rewards = np.zeros(shape=(seeds, snapshots+1))
         seed_list = ['Seed 0', 'Seed 1', 'Seed 2']
 
@@ -363,7 +423,7 @@ def learn(policy, env, seed,training,  total_timesteps=int(80e6),lrschedule='lin
             print('################### Seed {}!!! ###################'.format(seed))
             tstart = time.time()
             for snapshot in range(snapshots+1):
-                model.load_model(snapshot, seed, adda_mode=True)
+                model.load_model(snapshot, seed, adda_mode=False)
                 #print('##################################################')
                 print('Evaluating snapshot {}!!!'.format(snapshot))
                 reward = runner.runner_eval_parallel(num_episodes=1000, num_envs=nenvs)
@@ -372,7 +432,7 @@ def learn(policy, env, seed,training,  total_timesteps=int(80e6),lrschedule='lin
                 #snapshot_health.append(health)
                 
             print('Mean Reward of every snapshot: ', snapshot_reward)
-            snapshot_rewards[seed] = snapshot_reward
+            #snapshot_rewards[seed] = snapshot_reward
             #print('Mean Health of every snapshot: ', snapshot_health)
             print('##################################################')
             nseconds = time.time() - tstart
@@ -383,10 +443,11 @@ def learn(policy, env, seed,training,  total_timesteps=int(80e6),lrschedule='lin
             #plt.figure()
             plt.plot(epochs, np.array(snapshot_reward), '-o', label = seed_list[seed])
             plt.legend(loc = 'lower right')
-            plt.xlabel('Epochs')
+            plt.xlabel('Snapshot Number')
             plt.ylabel('Mean Reward after 1000 episodes')
             plt.savefig('Mean Reward.png')
         
+        '''
         # Create plot of mean reward of all seed values with std devns
         mean = []
         std = []
@@ -405,5 +466,6 @@ def learn(policy, env, seed,training,  total_timesteps=int(80e6),lrschedule='lin
         plt.xlabel('Epochs')
         plt.ylabel('Mean Reward after 1000 episodes')
         plt.savefig('Mean Reward of 3 seeds with std.png')
+        '''
 
 
