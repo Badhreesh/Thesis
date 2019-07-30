@@ -6,6 +6,8 @@ import adda_doom
 from tqdm import tqdm
 import click
 import os
+from baselines.a2c.utils import fc
+import copy
 #import matplotlib.pyplot as plt
 #batch_size = 100
 #adversary_layers =[500, 500]
@@ -23,8 +25,10 @@ import os
 @click.option('--lr', default=1e-4) # 0.0002
 @click.option('--stepsize', type=int)
 @click.option('--snapshot', default=1) # 1  #####################Run for 10 epochs. Save after every 1############################
+#@click.option('--load_fc/--no_load_fc', default=True)
 @click.option('--adversary', 'adversary_layers', default=[512, 512],
               multiple=True)
+
 
 # Step 1: Create base model for ADDA to run on
 # Done in cnn.py
@@ -36,42 +40,41 @@ def main(source, target, model, output, epochs, batch_size, display, lr, stepsiz
     # Step 2: Import source and target datasets
     source_array = np.load(source) # (100000, 84, 84, 1)
     target_array = np.load(target) # (100000, 84, 84, 1)
-    #source_adversary_label = np.zeros(len(source_array), dtype=int) 
-    #target_adversary_label = np.ones(len(target_array), dtype=int)
+
 
     x = tf.placeholder(tf.uint8, shape=[None, 84, 84, 1])
-    #y = tf.placeholder(tf.int8, shape=[None,1])
-    
+    seed = int.from_bytes(os.urandom(4), byteorder='big')
     # Step 3: Make dataset object using placeholder
-    source_dataset = tf.data.Dataset.from_tensor_slices(x).shuffle(buffer_size=100000, seed=2).batch(batch_size).repeat()
-    target_dataset = tf.data.Dataset.from_tensor_slices(x).shuffle(buffer_size=100000, seed=2).batch(batch_size).repeat()
-
-    # create generic iterator of correct shape and type
+    source_dataset = tf.data.Dataset.from_tensor_slices(x).shuffle(buffer_size=100000, seed=seed).batch(batch_size).repeat()
+    target_dataset = tf.data.Dataset.from_tensor_slices(x).shuffle(buffer_size=100000, seed=seed).batch(batch_size).repeat()
+    print('SEED: ', seed)
+    # Step 4: Create generic iterator of correct shape and type
     src_iter = tf.data.Iterator.from_structure(source_dataset.output_types, source_dataset.output_shapes)
     tgt_iter = tf.data.Iterator.from_structure(target_dataset.output_types, target_dataset.output_shapes)
     
     src_imgs = src_iter.get_next()
     tgt_imgs = tgt_iter.get_next()
 
+    # Step 5: Create initialisation operations
     source_iter_op = src_iter.make_initializer(source_dataset)
     target_iter_op = tgt_iter.make_initializer(target_dataset)
 
-    # Step 5: Feed images from both domains into 2 seperate instances of ur base network
+    # Step 6: Feed images from both domains into 2 seperate instances of ur base network
     model_fn = adda_doom.model.get_model_fn(model)
-    source_ft = model_fn(src_imgs, scope='source') 
-    target_ft = model_fn(tgt_imgs, scope='target') 
+    source_ft = model_fn(src_imgs, scope='source')    
+    target_ft = model_fn(tgt_imgs, scope='target')
 
     print('Encoded Source Output Size is:', source_ft.get_shape()) # (batch_size, 512)
     print('Encoded Target Output Size is:', target_ft.get_shape()) # (batch_size, 512)
     print('\n')
 
-    # Step 6: Concat them to form feature i/p to discriminator()
+    # Step 7: Concat model o/p's to form feature i/p to discriminator()
     adversary_ft = tf.concat([source_ft, target_ft], 0) 
 
     print('Adversary_ft size is:', adversary_ft.get_shape()) # (2*batch_size, 512)
     print('\n')
 
-    # Step 7: Create source and target adversary label of 0's and 1's resp
+    # Step 8: Create source and target adversary label of 0's and 1's resp
     source_adversary_label = tf.zeros([batch_size], tf.int32) 
     target_adversary_label = tf.ones([batch_size], tf.int32)
 
@@ -80,7 +83,7 @@ def main(source, target, model, output, epochs, batch_size, display, lr, stepsiz
     print('\n')
 
 
-    # Step 8: Concat them to form label i/p to discriminiator()
+    # Step 9: Concat them to form label i/p to discriminiator()
     adversary_label = tf.concat([source_adversary_label, target_adversary_label], 0)
     
     print('Adversary Label size is:', adversary_label.get_shape()) # (2*batch_size, )
@@ -111,8 +114,24 @@ def main(source, target, model, output, epochs, batch_size, display, lr, stepsiz
     '''
     source_vars = adda_doom.util.collect_vars('source', prepend_scope='model')
     target_vars = adda_doom.util.collect_vars('target', prepend_scope='model')
+
+    #print('Before Modifying')
+    #print(target_vars)
+    #print(len(target_vars))    
+
+    #print('\n')
+
+    #print('After Modifying')
+    print('########################')
+    print(target_vars.values())
+    print('########################')
+    print('\n')
+    #print(len(target_vars))
+    
     adversary_vars = adda_doom.util.collect_vars('adversary')
-    #print(source_vars.values())
+    print('########################')
+    print(adversary_vars.values())
+    print('########################')
     #import sys; sys.exit()
 
 
@@ -131,25 +150,43 @@ def main(source, target, model, output, epochs, batch_size, display, lr, stepsiz
 
 
     # Step 15: Restore weights from RL part to source and target model (Read variable names from saved model first)
-    weights = tf.train.latest_checkpoint('./')
+    #weights = tf.train.latest_checkpoint('./Snapshots_no_DA/Multiple Snapshots/hg_multiTexture_no_da/Seed 0/')
+    weights = tf.train.latest_checkpoint('./Snapshots_no_DA/Multiple Snapshots/hg_normal_no_da/Seed 0/')
+    #weights = '/misc/lmbraid18/raob/Snapshots_no_DA/Multiple Snapshots/hg_multiTexture_no_da/Seed 2/hg_multiTexture_no_da_model-48'
+    #weights = '/misc/lmbraid18/raob/Snapshots_no_DA/Multiple Snapshots/hg_normal_no_da/Seed 2/hg_normal_no_da_model-28'
     print('WEIGHTS:', weights)
     logging.info('Restoring weights from {}:'.format(weights))
 
     logging.info('Restoring source model:')
+
+    # Restore both conv layers and fc layer from RL Model
+    source_restorer = tf.train.Saver(var_list=source_vars)
     for src, tgt in source_vars.items():
         logging.info('        {:30} -> {:30}'.format(src, tgt.name)) # model/c1/w -> source/c1/w:0 etc
-    source_restorer = tf.train.Saver(var_list=source_vars)
-    #print('Weights before restoring',sess.run(source_vars['model/c1/b']))
+
+    print('Source Weights before restoring',sess.run(source_vars['model/fc1/b']))
     source_restorer.restore(sess, weights)
-    #print('Weights after restoring',sess.run(source_vars['model/c1/b']))
-    #import sys; sys.exit()
+    print('Source Weights after restoring',sess.run(source_vars['model/fc1/b']))
+
     
+
     logging.info('Restoring target model:')
-    for src, tgt in target_vars.items():
-        logging.info('        {:30} -> {:30}'.format(src, tgt.name)) # model/c1/w -> target/c1/w:0 etc
+
+    # Restore both conv layers and fc layer from RL Model
     target_restorer = tf.train.Saver(var_list=target_vars, max_to_keep=41)
+    for src, tgt in target_vars.items():
+        logging.info('        {:30} -> {:30}'.format(src, tgt.name)) # model/c1/w -> source/c1/w:0 etc
+        
+    print('Target Weights before restoring',sess.run(target_vars['model/fc1/b']))
     target_restorer.restore(sess, weights)
+    print('Target Weights after restoring',sess.run(target_vars['model/fc1/b']))
+
     print('Weights Restored Successfully')
+
+    #import sys; sys.exit()
+
+
+
 
 
     # Step 16: Setup Optimization Loop
@@ -170,12 +207,19 @@ def main(source, target, model, output, epochs, batch_size, display, lr, stepsiz
     # Initialize iterators
     sess.run(source_iter_op, feed_dict={x:source_array})
     sess.run(target_iter_op, feed_dict={x:target_array})
+    print('################################################', sess.run(tf.shape(src_imgs)))
+    print('################################################', sess.run(tf.shape(tgt_imgs)))  
+    print('#################### SOURCE_FT SHAPE ############################', sess.run(tf.shape(source_ft)))
+    print('#################### TARGET_FT SHAPE ############################', sess.run(tf.shape(target_ft)))
+    print('#################### COMBINED SHAPE ############################', sess.run(tf.shape(adversary_ft)))
+    print('#################### DISCRIMINTAOR OUTPUT SHAPE ############################', sess.run(tf.shape(adversary_logits)))
     print('################################## TRAINING BEGINS ##################################')
     for ep in bar:
         print('#######EPOCH {}#######'.format(ep+1))
         for i in range(100000//batch_size):
             mapping_loss_val, adversary_loss_val, _, _ = sess.run([mapping_loss, adversary_loss, mapping_step, adversary_step])
-
+            #print('Adversary Loss: ', adversary_loss_val)
+            #print(i)
             mapping_losses.append(mapping_loss_val)
             adversary_losses.append(adversary_loss_val)
 
@@ -194,7 +238,7 @@ def main(source, target, model, output, epochs, batch_size, display, lr, stepsiz
                 #avg_mapping_losses.append(np.mean(mapping_losses))
                 #avg_adversary_losses.append(np.mean(adversary_losses))
             '''
-        print('EPOCH: {} -> Mapping Loss: {:4f} Adversary Loss: {:.4f}'.format(ep+1, np.mean(avg_mapping_losses), np.mean(avg_adversary_losses)))
+        print('EPOCH: {} -> Mapping Loss: {:4f} Adversary Loss: {:.4f}'.format(ep+1, np.mean(mapping_losses), np.mean(adversary_losses)))
         
         if stepsize is not None and (ep + 1) % stepsize == 0:
             lr = sess.run(lr_var.assign(lr * 0.1))
@@ -203,18 +247,10 @@ def main(source, target, model, output, epochs, batch_size, display, lr, stepsiz
         
         if (ep + 1) % snapshot == 0:
             snapshot_path = target_restorer.save(
-                sess, os.path.join(output_dir, output), global_step=ep + 1, write_meta_graph=False)
+                sess, os.path.join(output_dir, output), global_step=ep + 1, write_meta_graph=False) 
             logging.info('Saved snapshot to {}'.format(snapshot_path))
+
     print('################################## TRAINING ENDS ##################################')
-    #print(len(avg_adversary_losses))
-    #print(len(avg_mapping_losses))
-    #plt.plot(np.arange(len(avg_mapping_losses)), avg_mapping_losses)
-    #plt.savefig('AvgMappingLoss.png')
-    #plt.close()
-    #plt.plot(np.arange(len(avg_adversary_losses)), avg_adversary_losses)
-    #plt.savefig('AvgAdversaryLoss.png')
-    #coord.request_stop()
-    #coord.join(threads)
     sess.close()
 
 
