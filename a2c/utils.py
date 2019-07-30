@@ -169,7 +169,12 @@ def conv_to_fc(x):
     x = tf.reshape(x, [-1, nh])
     return x
 
-def discount_with_dones(rewards, dones, gamma):
+'''
+example: 5 step TD
+rewards = [0,1,2,3,4]
+rewards[::-1] = [4,3,2,1,0]
+'''
+def discount_with_dones(rewards, dones, gamma): # rwds -> (20,)
     discounted = []
     r = 0
     for reward, done in zip(rewards[::-1], dones[::-1]): # a[::-1] means all items in the array, reversed

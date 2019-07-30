@@ -25,15 +25,16 @@ def main():
     parser.add_argument('--policy', help='Policy architecture', default='cnn')
     parser.add_argument('--lrschedule', help='Learning rate schedule', choices=['constant', 'linear'], default='linear')
 
-    parser.add_argument('--adda_lr', help='ADDA Learning Rate', default=0.0002)
+    parser.add_argument('--adda_lr', help='ADDA Learning Rate', default=0.0001)
     parser.add_argument('--adda_batch', help='ADDA Batch Size', default=100)
     
     args = parser.parse_args()
-    logger.configure('/misc/student/raob/Tests/60e6_Steps/Exp_hg_normal_with_ADDA')
+    print('ADDA l_rate: ', args.adda_lr)
+    #logger.configure('/misc/student/raob/Tests/60e6_Steps/hg_ST_5steps_40e4_decLR/Seed 2')
     # Train "num_env" envs, each running "doom_lvl" for "num_timesteps" timesteps with a policy architecture "policy"
     # with a Learning rate schedule "lrschedule"
     train(doom_lvl=args.doom_lvl, num_timesteps=args.num_timesteps, seed=args.seed,
-        policy=args.policy, lrschedule=args.lrschedule, adda_lr=args.adda_lr, adda_batch=args.adda_batch, num_env=16, training=True, use_adda=True)
+        policy=args.policy, lrschedule=args.lrschedule, adda_lr=args.adda_lr, adda_batch=args.adda_batch, num_env=1, training=False, use_adda=False)
 
 if __name__ == '__main__':
     main()
