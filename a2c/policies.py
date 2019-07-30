@@ -111,7 +111,7 @@ class LstmPolicy(object):
 '''
 class CnnPolicy(object):
 
-    def __init__(self, sess, ob_space, ac_space, adda_batch, nbatch, nsteps, reuse=False, dueling=True, use_adda=False, **conv_kwargs): #nbatch= nenvs*nsteps
+    def __init__(self, sess, ob_space, ac_space, adda_batch, seed, nbatch, nsteps, reuse=False, dueling=True, use_adda=False, **conv_kwargs): #nbatch= nenvs*nsteps
  
         num_actions = ac_space.n
         nh, nw, nc = ob_space.shape
@@ -125,7 +125,7 @@ class CnnPolicy(object):
             h = nature_cnn(X, **conv_kwargs)
             Qf, a0 = self.get_q_and_a(h, one_hot_A, num_actions, dueling=dueling)
 
-        one_hot_normal_net_a = tf.one_hot(a0, num_actions) # Target N/W uses action computed from DQN N/W to compute the Q_target
+        one_hot_normal_net_a = tf.one_hot(a0, num_actions) # Target N/W uses best action computed from DQN (action with max Q value) to compute the Q_target
         with tf.variable_scope("target_model", reuse=reuse):
             h = nature_cnn(X, **conv_kwargs)
             q_target = self.get_ddqn_q_target(h, one_hot_normal_net_a, num_actions, dueling=dueling)
@@ -138,9 +138,10 @@ class CnnPolicy(object):
             dataset_imgs = tf.placeholder(tf.uint8, shape=[None, 84, 84, 1])
         
             print('Datasets loaded!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!')
+            print('ADDA SEED: ',seed)
             # Make dataset object using placeholder
-            source_dataset = tf.data.Dataset.from_tensor_slices(dataset_imgs).shuffle(buffer_size=100000, seed=0).batch(adda_batch).repeat()
-            target_dataset = tf.data.Dataset.from_tensor_slices(dataset_imgs).shuffle(buffer_size=100000, seed=0).batch(adda_batch).repeat()
+            source_dataset = tf.data.Dataset.from_tensor_slices(dataset_imgs).shuffle(buffer_size=100000, seed=seed).batch(adda_batch).repeat()
+            target_dataset = tf.data.Dataset.from_tensor_slices(dataset_imgs).shuffle(buffer_size=100000, seed=seed).batch(adda_batch).repeat()
 
             # Create generic iterator of correct shape and type
             src_iter = tf.data.Iterator.from_structure(source_dataset.output_types, source_dataset.output_shapes)
@@ -239,7 +240,8 @@ class CnnPolicy(object):
             q = fc(fc_layer, 'Qf', num_actions) # (nbatch,nactions) --> (16,6)
             
             q_target = tf.reduce_sum(tf.multiply(q, one_hot_normal_net_action), 1) # In Vanilla DQN, q_target = tf.reduce_max(q, axis=1) 
-            
+            # q_target has max q values for each env, bcus one_hot_normal_net_action is built from actions that have max q values from
+            # the DQN 
             return q_target # This is only the bootstrapped part of the TD Target 
         else:
             h = tf.nn.relu(fc(fc_layer, 'fc2_Q_adv', 512))
